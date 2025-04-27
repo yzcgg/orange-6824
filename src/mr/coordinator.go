@@ -10,6 +10,27 @@ import "net/http"
 type Coordinator struct {
 	// Your definitions here.
 
+	MappingTaskMap map[string]Task
+	ReducingTaskMap map[string]Task
+
+}
+
+const (
+	Unstart = iota
+	Running
+	Finished
+)
+
+const (
+	MapTask = iota
+	ReduceTask
+)
+
+type Task struct {
+	Status int
+	Name string
+	TaskType int
+	TaskNumber int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -21,6 +42,19 @@ type Coordinator struct {
 //
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
+	return nil
+}
+
+func (c *Coordinator) GetMapTask(args *GetMapTaskArgs, reply *GetMapTaskReply) error {
+	for k, v := range c.MappingTaskMap {
+		if v.Status == Unstart {
+			v.Status = Running
+			reply.Task = v
+			reply.Task.Name = k
+			c.MappingTaskMap[k] = v
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -63,6 +97,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
+	c.MappingTaskMap = make(map[string]Task)
+	c.ReducingTaskMap = make(map[string]Task)
+	for idx, f := range files {
+		c.MappingTaskMap[f] = Task{
+			Status: Unstart,
+			TaskNumber: idx,
+		}
+	}
 
 
 	c.server()

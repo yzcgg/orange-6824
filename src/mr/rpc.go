@@ -24,6 +24,12 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type GetMapTaskArgs struct {}
+
+type GetMapTaskReply struct {
+	Task Task
+}
+
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
