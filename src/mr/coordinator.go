@@ -5,6 +5,9 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
+import (
+	"github.com/davecgh/go-spew/spew"
+)
 
 
 type Coordinator struct {
@@ -12,6 +15,8 @@ type Coordinator struct {
 
 	MappingTaskMap map[string]Task
 	ReducingTaskMap map[string]Task
+
+	NReduce int
 
 }
 
@@ -52,10 +57,16 @@ func (c *Coordinator) GetMapTask(args *GetMapTaskArgs, reply *GetMapTaskReply) e
 			reply.Task = v
 			reply.Task.Name = k
 			c.MappingTaskMap[k] = v
-			log.Println("MappingTaskMap: ", c.MappingTaskMap)
+			spew.Dump(c.MappingTaskMap)
 			return nil
 		}
 	}
+	log.Println("No available map task")
+	return nil
+}
+
+func (c *Coordinator) GetNReduce(args *GetNReduceArgs, reply *GetNReduceReply) error {
+	reply.NReduce = c.NReduce
 	return nil
 }
 
@@ -103,9 +114,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for idx, f := range files {
 		c.MappingTaskMap[f] = Task{
 			Status: Unstart,
+			TaskType: MapTask,
 			TaskNumber: idx,
 		}
 	}
+
+	c.NReduce = nReduce
 
 
 	c.server()

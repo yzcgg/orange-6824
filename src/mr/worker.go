@@ -1,13 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
-	"encoding/json"
 )
 
 // Map functions return a slice of KeyValue.
@@ -23,6 +23,7 @@ func ihash(key string) int {
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
+
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
@@ -46,18 +47,23 @@ func Worker(mapf func(string, string) []KeyValue,
 	file.Close()
 	kva := mapf(task.Name, string(content))
 
-	interResJson, _ := json.Marshal(kva)
-	interResFile, err := os.Create(fmt.Sprintf("mr-%d-%d.json", task.TaskNumber, task.TaskNumber))
-	if err != nil {
-		log.Fatalf("cannot create %v", task.Name+"_intermediate")
-	}
-	defer interResFile.Close()
-	_, err = interResFile.Write(interResJson)
-	if err != nil {
-		log.Fatalf("cannot write to %v", task.Name+"_intermediate")
-	}
+	nReduce, ok := CallGetNReduce()
 
+	kvaPartition := Partition(kva, nReduce)
 
+	for i := 0; i < nReduce; i++ {
+		curKva := kvaPartition[i]
+		interResJson, _ := json.Marshal(curKva)
+		interResFile, err := os.OpenFile(fmt.Sprintf("mr-%d-%d.json", task.TaskNumber, i), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("cannot create %v", task.Name+"_intermediate")
+		}
+		defer interResFile.Close()
+		_, err = interResFile.Write(interResJson)
+		if err != nil {
+			log.Fatalf("cannot write to %v", task.Name+"_intermediate")
+		}
+	}
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
@@ -109,6 +115,19 @@ func CallGetMapTask() (Task, bool) {
 		return reply.Task, true
 	} else {
 		return Task{}, false
+	}
+}
+
+func CallGetNReduce() (int, bool) {
+	args := GetNReduceArgs{}
+
+	reply := GetNReduceReply{}
+
+	ok := call("Coordinator.GetNReduce", &args, &reply)
+	if ok {
+		return reply.NReduce, true
+	} else {
+		return 0, false
 	}
 }
 

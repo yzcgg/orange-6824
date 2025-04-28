@@ -30,6 +30,12 @@ type GetMapTaskReply struct {
 	Task Task
 }
 
+type GetNReduceArgs struct {}
+
+type GetNReduceReply struct {
+	NReduce int
+}
+
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
