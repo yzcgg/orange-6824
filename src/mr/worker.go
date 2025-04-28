@@ -57,9 +57,19 @@ func Worker(mapf func(string, string) []KeyValue,
 		log.Fatalf("cannot write to %v", task.Name+"_intermediate")
 	}
 
+
+
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+}
+
+func Partition(kva []KeyValue, nReduce int) [][]KeyValue {
+	partition := make([][]KeyValue, nReduce)
+	for _, kv := range kva {
+		partition[ihash(kv.Key)%nReduce] = append(partition[ihash(kv.Key)%nReduce], kv)
+	}
+	return partition
 }
 
 // example function to show how to make an RPC call to the coordinator.

@@ -52,6 +52,7 @@ func (c *Coordinator) GetMapTask(args *GetMapTaskArgs, reply *GetMapTaskReply) e
 			reply.Task = v
 			reply.Task.Name = k
 			c.MappingTaskMap[k] = v
+			log.Println("MappingTaskMap: ", c.MappingTaskMap)
 			return nil
 		}
 	}
