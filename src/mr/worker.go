@@ -8,6 +8,11 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"time"
+)
+
+var (
+	workerId int = -1
 )
 
 // Map functions return a slice of KeyValue.
@@ -24,17 +29,64 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func ProcessMapTask(task *Task, mapf func(string, string) []KeyValue) {
+	filename := task.InputFile
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
+	kvaPartition := Partition(kva, task.NReduce)
+	for i := 0; i < task.NReduce; i++ {
+		curKva := kvaPartition[i]
+		interResJson, _ := json.Marshal(curKva)
+		interResFile, err := os.CreateTemp(".", fmt.Sprintf("mr-%d-%d.tmp", task.Id, i))
+		if err!= nil {
+			log.Fatalf("cannot create %v", filename)
+		}
+		defer interResFile.Close()
+		_, err = interResFile.Write(interResJson)
+		if err!= nil {
+			log.Fatalf("cannot write to %v", filename)
+		}
+	}
+}
 
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
-	task, ok := CallGetMapTask()
-	if !ok {
-		fmt.Println("Failed to get map task")
-		return
+	for {
+		task := CallGetTask(workerId)
+		if task == nil {
+			log.Fatalf("get task failed")
+			break
+		}
+		if task.Id == -1 {
+			log.Printf("no task available")
+			time.Sleep(time.Second)
+			continue
+		}
+		switch task.Stage {
+		case Map:
+			log.Printf("in map stage")
+
+		case Reduce:
+			log.Printf("in reduce stage")
+		case Done:
+			log.Printf("Done!")
+			return
+		default:
+			log.Fatalf("unknown stage")
+		}
+
 	}
+	// Your worker implementation here.
 
 	file, err := os.Open(task.Name)
 	if err != nil {
@@ -105,16 +157,16 @@ func CallExample() {
 	}
 }
 
-func CallGetMapTask() (Task, bool) {
-	args := GetMapTaskArgs{}
-
-	reply := GetMapTaskReply{}
-
-	ok := call("Coordinator.GetMapTask", &args, &reply)
+func CallGetTask(workerId int) *Task {
+	args := GetTaskArgs{
+		WorkerId: workerId,
+	}
+	reply := GetTaskReply{}
+	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {
-		return reply.Task, true
+		return &reply.Task
 	} else {
-		return Task{}, false
+		return nil
 	}
 }
 

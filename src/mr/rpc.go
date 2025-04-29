@@ -24,9 +24,11 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
-type GetMapTaskArgs struct {}
+type GetTaskArgs struct {
+	WorkerId int
+}
 
-type GetMapTaskReply struct {
+type GetTaskReply struct {
 	Task Task
 }
 

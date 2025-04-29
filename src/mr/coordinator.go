@@ -1,11 +1,13 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"time"
+
 	"github.com/davecgh/go-spew/spew"
 )
 
@@ -13,29 +15,40 @@ import (
 type Coordinator struct {
 	// Your definitions here.
 
-	MappingTaskMap map[string]Task
+	MappingTaskMap []Task
 	ReducingTaskMap map[string]Task
 
-	NReduce int
+	M int
+	R int
+	Stage int
+	curMapTaskId int
+	curReduceTaskId int
+
 
 }
 
+// task status
 const (
-	Unstart = iota
+	Idle = iota
 	Running
-	Finished
+	Completed
 )
 
+// stage
 const (
-	MapTask = iota
-	ReduceTask
+	Map = iota
+	Reduce
+	Done
 )
 
 type Task struct {
+	Id int
 	Status int
-	Name string
-	TaskType int
-	TaskNumber int
+	WorkerId int
+	InputFile string
+	BeginTime time.Time
+	Stage int
+	NReduce int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -50,16 +63,29 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) GetMapTask(args *GetMapTaskArgs, reply *GetMapTaskReply) error {
-	for k, v := range c.MappingTaskMap {
-		if v.Status == Unstart {
-			v.Status = Running
-			reply.Task = v
-			reply.Task.Name = k
-			c.MappingTaskMap[k] = v
-			spew.Dump(c.MappingTaskMap)
-			return nil
+func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	switch c.Stage {
+	case Map:
+		if args.WorkerId == -1 {
+			args.WorkerId = c.curMapTaskId
+			c.curMapTaskId++
 		}
+		// find idle task
+		for idx, task := range c.MappingTaskMap {
+			if task.Status == Idle {
+				c.MappingTaskMap[idx].Status = Running
+				c.MappingTaskMap[idx].WorkerId = args.WorkerId
+				c.MappingTaskMap[idx].BeginTime = time.Now()
+				reply.Task = c.MappingTaskMap[idx]
+				return nil
+			}
+		}
+		// can not find idle task
+		reply.Task.Id = -1
+		return nil
+	case Reduce:
+	case Done:
+		reply.Task.Stage = Done
 	}
 	log.Println("No available map task")
 	return nil
@@ -109,17 +135,20 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	c.MappingTaskMap = make(map[string]Task)
-	c.ReducingTaskMap = make(map[string]Task)
+	c.M = len(files)
+	c.R = nReduce
+	c.Stage = Map
+	c.MappingTaskMap = make([]Task, len(files))
 	for idx, f := range files {
-		c.MappingTaskMap[f] = Task{
-			Status: Unstart,
-			TaskType: MapTask,
-			TaskNumber: idx,
+		c.MappingTaskMap[idx] = Task{
+			Status: Idle,
+			InputFile: f,
+			Id: idx,
+			Stage: c.Stage,
+			NReduce: c.R,
 		}
 	}
-
-	c.NReduce = nReduce
+	
 
 
 	c.server()
