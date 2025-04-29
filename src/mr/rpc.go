@@ -6,8 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -32,12 +34,21 @@ type GetTaskReply struct {
 	Task Task
 }
 
-type GetNReduceArgs struct {}
-
-type GetNReduceReply struct {
-	NReduce int
+type FinishMapTaskArgs struct {
+	IntermediateFiles []string
+	Task              Task
 }
 
+type FinishMapTaskReply struct {
+}
+
+type FinishReduceTaskArgs struct {
+	OutputFile string
+	Task       Task
+}
+
+type FinishReduceTaskReply struct {
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

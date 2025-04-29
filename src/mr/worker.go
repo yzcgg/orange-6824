@@ -4,16 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
 var (
 	workerId int = -1
 )
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -29,32 +38,81 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func ProcessMapTask(task *Task, mapf func(string, string) []KeyValue) {
+func ProcessMapTask(task *Task, mapf func(string, string) []KeyValue) []string {
 	filename := task.InputFile
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
 	}
-	content, err := ioutil.ReadAll(file)
+	content, err := io.ReadAll(file)
 	if err != nil {
 		log.Fatalf("cannot read %v", filename)
 	}
 	file.Close()
 	kva := mapf(filename, string(content))
 	kvaPartition := Partition(kva, task.NReduce)
+	resp := make([]string, task.NReduce)
 	for i := 0; i < task.NReduce; i++ {
 		curKva := kvaPartition[i]
 		interResJson, _ := json.Marshal(curKva)
 		interResFile, err := os.CreateTemp(".", fmt.Sprintf("mr-%d-%d.tmp", task.Id, i))
-		if err!= nil {
+		if err != nil {
 			log.Fatalf("cannot create %v", filename)
 		}
 		defer interResFile.Close()
 		_, err = interResFile.Write(interResJson)
-		if err!= nil {
+		if err != nil {
 			log.Fatalf("cannot write to %v", filename)
 		}
+		resp[i] = interResFile.Name()
 	}
+	return resp
+}
+
+func ProcessReduceTask(task *Task, reducef func(string, []string) string) string {
+	kvaList := make([]KeyValue, 0)
+	for _, file := range task.InputFiles {
+		log.Printf("processing %s\n", file)
+		intermediateFile, err := os.Open(file)
+		if err != nil {
+			log.Fatalf("cannot open %v", file)
+		}
+		defer intermediateFile.Close()
+		content, err := io.ReadAll(intermediateFile)
+		if err != nil {
+			log.Fatalf("cannot read %v", file)
+		}
+		var kva []KeyValue
+		if err := json.Unmarshal(content, &kva); err != nil {
+			log.Fatalf("cannot unmarshal %v", file)
+		}
+		kvaList = append(kvaList, kva...)
+	}
+	sort.Sort(ByKey(kvaList))
+	oname := fmt.Sprintf("mr-out-%d", task.Id)
+	ofile, err := os.CreateTemp(".", oname)
+	if err != nil {
+		log.Fatalf("cannot create %v", oname)
+	}
+	defer ofile.Close()
+	i := 0
+	for i < len(kvaList) {
+		j := i + 1
+		for j < len(kvaList) && kvaList[j].Key == kvaList[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kvaList[k].Value)
+		}
+		output := reducef(kvaList[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kvaList[i].Key, output)
+
+		i = j
+	}
+	return ofile.Name()
 }
 
 // main/mrworker.go calls this function.
@@ -67,6 +125,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Fatalf("get task failed")
 			break
 		}
+		workerId = task.WorkerId
 		if task.Id == -1 {
 			log.Printf("no task available")
 			time.Sleep(time.Second)
@@ -75,9 +134,14 @@ func Worker(mapf func(string, string) []KeyValue,
 		switch task.Stage {
 		case Map:
 			log.Printf("in map stage")
-
+			intermediateFiles := ProcessMapTask(task, mapf)
+			// notify coordinator that the task is finished
+			CallFinishMapTask(intermediateFiles, task)
 		case Reduce:
 			log.Printf("in reduce stage")
+			outputFile := ProcessReduceTask(task, reducef)
+
+			CallFinishReduceTask(outputFile, task)
 		case Done:
 			log.Printf("Done!")
 			return
@@ -87,35 +151,6 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	}
 	// Your worker implementation here.
-
-	file, err := os.Open(task.Name)
-	if err != nil {
-		log.Fatalf("cannot open %v", task.Name)
-	}
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Fatalf("cannot read %v", task.Name)
-	}
-	file.Close()
-	kva := mapf(task.Name, string(content))
-
-	nReduce, ok := CallGetNReduce()
-
-	kvaPartition := Partition(kva, nReduce)
-
-	for i := 0; i < nReduce; i++ {
-		curKva := kvaPartition[i]
-		interResJson, _ := json.Marshal(curKva)
-		interResFile, err := os.OpenFile(fmt.Sprintf("mr-%d-%d.json", task.TaskNumber, i), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Fatalf("cannot create %v", task.Name+"_intermediate")
-		}
-		defer interResFile.Close()
-		_, err = interResFile.Write(interResJson)
-		if err != nil {
-			log.Fatalf("cannot write to %v", task.Name+"_intermediate")
-		}
-	}
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
@@ -170,16 +205,31 @@ func CallGetTask(workerId int) *Task {
 	}
 }
 
-func CallGetNReduce() (int, bool) {
-	args := GetNReduceArgs{}
-
-	reply := GetNReduceReply{}
-
-	ok := call("Coordinator.GetNReduce", &args, &reply)
+func CallFinishMapTask(intermediateFiles []string, task *Task) {
+	args := FinishMapTaskArgs{
+		IntermediateFiles: intermediateFiles,
+		Task:              *task,
+	}
+	reply := FinishMapTaskReply{}
+	ok := call("Coordinator.FinishMapTask", &args, &reply)
 	if ok {
-		return reply.NReduce, true
+		return
 	} else {
-		return 0, false
+		log.Fatalf("call finish task failed")
+	}
+}
+
+func CallFinishReduceTask(outputFile string, task *Task) {
+	args := FinishReduceTaskArgs{
+		OutputFile: outputFile,
+		Task:       *task,
+	}
+	reply := FinishMapTaskReply{}
+	ok := call("Coordinator.FinishReduceTask", &args, &reply)
+	if ok {
+		return
+	} else {
+		log.Fatalf("call finish task failed")
 	}
 }
 
