@@ -16,10 +16,8 @@ var (
 	workerId int = -1
 )
 
-// for sorting by key.
 type ByKey []KeyValue
 
-// for sorting by key.
 func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
@@ -72,7 +70,7 @@ func ProcessMapTask(task *Task, mapf func(string, string) []KeyValue) []string {
 func ProcessReduceTask(task *Task, reducef func(string, []string) string) string {
 	kvaList := make([]KeyValue, 0)
 	for _, file := range task.InputFiles {
-		log.Printf("processing %s\n", file)
+		// log.Printf("processing %s\n", file)
 		intermediateFile, err := os.Open(file)
 		if err != nil {
 			log.Fatalf("cannot open %v", file)
@@ -119,13 +117,11 @@ func ProcessReduceTask(task *Task, reducef func(string, []string) string) string
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	workerId = CallGetWorkerId()
+	// log.Printf("worker %d is started\n", workerId)
+
 	for {
 		task := CallGetTask(workerId)
-		if task == nil {
-			log.Fatalf("get task failed")
-			break
-		}
-		workerId = task.WorkerId
 		if task.Id == -1 {
 			log.Printf("no task available")
 			time.Sleep(time.Second)
@@ -133,28 +129,18 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		switch task.Stage {
 		case Map:
-			log.Printf("in map stage")
 			intermediateFiles := ProcessMapTask(task, mapf)
-			// notify coordinator that the task is finished
 			CallFinishMapTask(intermediateFiles, task)
 		case Reduce:
-			log.Printf("in reduce stage")
 			outputFile := ProcessReduceTask(task, reducef)
-
 			CallFinishReduceTask(outputFile, task)
-		case Done:
-			log.Printf("Done!")
+		case Finish:
 			return
 		default:
-			log.Fatalf("unknown stage")
+			log.Printf("unknown stage = %v", task.Stage)
 		}
 
 	}
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 }
 
 func Partition(kva []KeyValue, nReduce int) [][]KeyValue {
@@ -163,33 +149,6 @@ func Partition(kva []KeyValue, nReduce int) [][]KeyValue {
 		partition[ihash(kv.Key)%nReduce] = append(partition[ihash(kv.Key)%nReduce], kv)
 	}
 	return partition
-}
-
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
 }
 
 func CallGetTask(workerId int) *Task {
@@ -233,6 +192,17 @@ func CallFinishReduceTask(outputFile string, task *Task) {
 	}
 }
 
+func CallGetWorkerId() int {
+	args := GetWorkerIdArgs{}
+	reply := GetWorkerIdReply{}
+	ok := call("Coordinator.GetWorkerId", &args, &reply)
+	if ok {
+		return reply.WorkerId
+	} else {
+		log.Fatalf("call get worker id failed")
+		return -1
+	}
+}
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.

@@ -34,6 +34,14 @@ type GetTaskReply struct {
 	Task Task
 }
 
+type GetWorkerIdArgs struct {
+	
+}
+
+type GetWorkerIdReply struct {
+	WorkerId int
+}
+
 type FinishMapTaskArgs struct {
 	IntermediateFiles []string
 	Task              Task
@@ -48,6 +56,14 @@ type FinishReduceTaskArgs struct {
 }
 
 type FinishReduceTaskReply struct {
+}
+
+type WorkerExitArgs struct {
+	WorkerId int
+}
+
+type WorkerExitReply struct {
+	
 }
 
 // Cook up a unique-ish UNIX-domain socket name

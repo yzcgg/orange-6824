@@ -28,6 +28,7 @@ type Coordinator struct {
 	completedReduceTaskCount int
 
 	avaliableWorkerId int
+	aliveWorkerMap    map[int]struct{}
 }
 
 // task status
@@ -42,7 +43,7 @@ const (
 	_ = iota
 	Map
 	Reduce
-	Done
+	Finish
 )
 
 type Task struct {
@@ -56,30 +57,18 @@ type Task struct {
 	InputFiles []string
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-	c.lock.Lock()
-	if args.WorkerId == -1 {
-		args.WorkerId = c.avaliableWorkerId
-		log.Printf("Assign a new worker id %d\n", args.WorkerId)
-		c.avaliableWorkerId++
-	}
-	c.lock.Unlock()
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	// 记录存活的 worker
+	if _, ok := c.aliveWorkerMap[args.WorkerId]; !ok {
+		c.aliveWorkerMap[args.WorkerId] = struct{}{}
+	}
+
 	switch c.Stage {
 	case Map:
-		log.Println("Current Stage is Map")
 		// find idle task
 		for idx, task := range c.MappingTaskMap {
 			if task.Status == Idle {
@@ -96,7 +85,6 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		}
 		return nil
 	case Reduce:
-		log.Println("Current Stage is Reduce")
 		for idx, task := range c.ReducingTaskMap {
 			if task.Status == Idle {
 				c.ReducingTaskMap[idx].Status = Running
@@ -107,36 +95,35 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				return nil
 			}
 		}
-	case Done:
+	case Finish:
 		reply.Task = Task{
-			Stage: Done,
+			Stage: Finish,
 		}
+		delete(c.aliveWorkerMap, args.WorkerId)
 	}
-	log.Println("No available task")
 	return nil
 }
 
 func (c *Coordinator) FinishMapTask(args *FinishMapTaskArgs, reply *FinishMapTaskReply) error {
-	for _, file := range args.IntermediateFiles {
-		// commit
-		filePrefix := strings.Split(strings.Split(file, ".")[1], "/")[1]
-		intermediaFileName := fmt.Sprintf("%s.json", filePrefix)
-		err := os.Rename(file, intermediaFileName)
-		if err != nil {
-			log.Fatalf("rename file %s failed", file)
-		}
-		reduceTaskNumber, _ := strconv.Atoi(strings.Split(filePrefix, "-")[2])
-		c.IntermediateFileAddr[reduceTaskNumber] = append(c.IntermediateFileAddr[reduceTaskNumber], intermediaFileName)
-	}
 	c.lock.Lock()
-	if c.MappingTaskMap[args.Task.Id].Status == Running {
+	if c.MappingTaskMap[args.Task.Id].Status == Running && c.MappingTaskMap[args.Task.Id].WorkerId == args.Task.WorkerId {
 		c.MappingTaskMap[args.Task.Id].Status = Completed
 		c.completedMapTaskCount++
+		for _, file := range args.IntermediateFiles {
+			// commit
+			filePrefix := strings.Split(strings.Split(file, ".")[1], "/")[1]
+			intermediaFileName := fmt.Sprintf("%s.json", filePrefix)
+			err := os.Rename(file, intermediaFileName)
+			if err != nil {
+				log.Fatalf("rename file %s failed", file)
+			}
+			reduceTaskNumber, _ := strconv.Atoi(strings.Split(filePrefix, "-")[2])
+			c.IntermediateFileAddr[reduceTaskNumber] = append(c.IntermediateFileAddr[reduceTaskNumber], intermediaFileName)
+		}
+		// log.Printf("worker %d finished map task %d\n", args.Task.WorkerId, args.Task.Id)
 	}
-	c.lock.Unlock()
-	log.Printf("Map task %d is completed\n", args.Task.Id)
+
 	if c.completedMapTaskCount == c.M {
-		log.Println("All map tasks are completed")
 		c.ReducingTaskMap = make([]Task, c.R)
 		for i := 0; i < c.R; i++ {
 			c.ReducingTaskMap[i] = Task{
@@ -149,25 +136,34 @@ func (c *Coordinator) FinishMapTask(args *FinishMapTaskArgs, reply *FinishMapTas
 		}
 		c.Stage = Reduce
 	}
+	c.lock.Unlock()
 	return nil
 }
 
 func (c *Coordinator) FinishReduceTask(args *FinishReduceTaskArgs, reply *FinishReduceTaskReply) error {
-	err := os.Rename(args.OutputFile, args.OutputFile)
-	if err != nil {
-		log.Fatalf("rename file %s failed", args.OutputFile)
-	}
 	c.lock.Lock()
-	if c.ReducingTaskMap[args.Task.Id].Status == Running {
+	if c.ReducingTaskMap[args.Task.Id].Status == Running && c.ReducingTaskMap[args.Task.Id].WorkerId == args.Task.WorkerId {
 		c.ReducingTaskMap[args.Task.Id].Status = Completed
 		c.completedReduceTaskCount++
+		err := os.Rename(args.OutputFile, fmt.Sprintf("mr-out-%d", args.Task.Id))
+		if err != nil {
+			log.Fatalf("rename file %s failed", args.OutputFile)
+		}
+	}
+
+	if c.completedReduceTaskCount == c.R {
+		c.Stage = Finish
 	}
 	c.lock.Unlock()
-	log.Printf("Reduce task %d is completed\n", args.Task.Id)
-	if c.completedReduceTaskCount == c.R {
-		log.Println("All reduce tasks are completed")
-		c.Stage = Done
-	}
+
+	return nil
+}
+
+func (c *Coordinator) GetWorkerId(args *GetWorkerIdArgs, reply *GetWorkerIdReply) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.avaliableWorkerId++
+	reply.WorkerId = c.avaliableWorkerId
 	return nil
 }
 
@@ -188,7 +184,9 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	return c.Stage == Done
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return len(c.aliveWorkerMap) == 0 && c.Stage == Finish
 }
 
 // create a Coordinator.
@@ -202,6 +200,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.R = nReduce
 	c.Stage = Map
 	c.MappingTaskMap = make([]Task, len(files))
+	c.aliveWorkerMap = make(map[int]struct{})
 	for idx, f := range files {
 		c.MappingTaskMap[idx] = Task{
 			InputFile: f,
@@ -216,6 +215,42 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.IntermediateFileAddr[i] = make([]string, 0)
 	}
 
+	go c.StartTaskQueueChecker(1 * time.Second)
+
 	c.server()
 	return &c
+}
+
+// StartTaskQueueChecker 启动定时任务队列检查器
+func (c *Coordinator) StartTaskQueueChecker(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.lock.Lock()
+		switch c.Stage {
+		case Map:
+			for idx, task := range c.MappingTaskMap {
+				if task.Status == Running && time.Since(task.BeginTime) > 10*time.Second {
+					c.MappingTaskMap[idx].Status = Idle
+					c.MappingTaskMap[idx].WorkerId = -1
+					delete(c.aliveWorkerMap, task.WorkerId) // 超过10s未完成任务，视为worker宕机
+					// log.Printf("Map task %d is timeout, reset to idle", task.Id)
+				}
+			}
+		case Reduce:
+			for idx, task := range c.ReducingTaskMap {
+				if task.Status == Running && time.Since(task.BeginTime) > 10*time.Second {
+					c.ReducingTaskMap[idx].Status = Idle
+					c.ReducingTaskMap[idx].WorkerId = -1
+					delete(c.aliveWorkerMap, task.WorkerId) // 超过10s未完成任务，视为worker宕机
+					// log.Printf("Reduce task %d is timeout, reset to idle", task.Id)
+				}
+			}
+		case Finish:
+			c.lock.Unlock()
+			return
+		}
+		c.lock.Unlock()
+	}
 }
